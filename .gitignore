@@ -16,6 +16,9 @@ storage/
 uploads/
 results/
 
+# Restricted source documents
+/cv_doc/자격증확인서_김건.pdf
+
 # Logs
 *.log
 npm-debug.log*
