@@ -1,7 +1,6 @@
 package com.docconversion.service;
 
 import java.awt.image.BufferedImage;
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigInteger;
@@ -11,7 +10,6 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import javax.imageio.ImageIO;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
@@ -21,12 +19,6 @@ import org.apache.pdfbox.text.TextPosition;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
 import org.apache.poi.xwpf.usermodel.XWPFRun;
-import org.apache.poi.util.Units;
-import org.openxmlformats.schemas.drawingml.x2006.wordprocessingDrawing.CTAnchor;
-import org.openxmlformats.schemas.drawingml.x2006.wordprocessingDrawing.CTInline;
-import org.openxmlformats.schemas.drawingml.x2006.wordprocessingDrawing.STRelFromH;
-import org.openxmlformats.schemas.drawingml.x2006.wordprocessingDrawing.STRelFromV;
-import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTDrawing;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -34,9 +26,6 @@ import org.springframework.stereotype.Component;
 public class PdfToDocxConverter {
 
     private static final float ROW_TOLERANCE_POINTS = 3.0f;
-    private static final float RENDER_DPI = 144.0f;
-    private static final float MIN_TEXT_BOX_WIDTH_POINTS = 12.0f;
-    private static final float MIN_TEXT_BOX_HEIGHT_POINTS = 8.0f;
     private static final String KOREAN_FONT = "Malgun Gothic";
     private final TesseractOcrService ocrService;
 
@@ -70,19 +59,12 @@ public class PdfToDocxConverter {
                 }
 
                 PDPage page = pdf.getPage(pageIndex);
-                XWPFParagraph canvas = docx.createParagraph();
-                canvas.setSpacingAfter(0);
-                canvas.setSpacingBefore(0);
-
-                addPageBackground(docx, canvas, renderer, page, pageIndex);
                 List<DocumentTextLine> lines = groupIntoLines(textByPage.getOrDefault(pageIndex + 1, List.of()));
                 if (lines.isEmpty() && ocrService.isAvailable()) {
                     BufferedImage ocrImage = renderer.renderImageWithDPI(pageIndex, ocrService.renderDpi());
                     lines = ocrService.recognize(ocrImage);
                 }
-                for (int lineIndex = 0; lineIndex < lines.size(); lineIndex++) {
-                    addEditableTextBox(canvas, lines.get(lineIndex), pageIndex, lineIndex);
-                }
+                writeEditablePage(docx, lines);
             }
 
             docx.write(output);
@@ -109,151 +91,27 @@ public class PdfToDocxConverter {
         margins.setFooter(BigInteger.ZERO);
     }
 
-    private void addPageBackground(
-        XWPFDocument document,
-        XWPFParagraph paragraph,
-        PDFRenderer renderer,
-        PDPage page,
-        int pageIndex
-    ) throws IOException {
-        BufferedImage image = renderer.renderImageWithDPI(pageIndex, RENDER_DPI);
-        byte[] imageBytes;
-        try (ByteArrayOutputStream imageOutput = new ByteArrayOutputStream()) {
-            ImageIO.write(image, "png", imageOutput);
-            imageBytes = imageOutput.toByteArray();
-        }
+    private void writeEditablePage(XWPFDocument document, List<DocumentTextLine> lines) {
+        float previousBaseline = 0;
+        float previousHeight = 0;
+        for (DocumentTextLine line : lines) {
+            float effectiveFontSize = Math.max(6.0f, Math.min(line.fontSize(), line.height() * 1.15f));
+            float verticalGap = previousBaseline == 0
+                ? Math.max(0, line.y() - line.height())
+                : Math.max(0, line.y() - previousBaseline - previousHeight);
 
-        try (ByteArrayInputStream imageInput = new ByteArrayInputStream(imageBytes)) {
+            XWPFParagraph paragraph = document.createParagraph();
+            paragraph.setIndentationLeft(Math.max(0, Math.round(line.x() * 20)));
+            paragraph.setSpacingBefore(Math.max(0, Math.round(verticalGap * 20)));
+            paragraph.setSpacingAfter(0);
+
             XWPFRun run = paragraph.createRun();
-            run.addPicture(
-                imageInput,
-                XWPFDocument.PICTURE_TYPE_PNG,
-                "page-background-" + (pageIndex + 1) + ".png",
-                Units.toEMU(page.getMediaBox().getWidth()),
-                Units.toEMU(page.getMediaBox().getHeight())
-            );
-            moveInlinePictureBehindPage(run, pageIndex);
-        } catch (Exception exception) {
-            throw new IOException("PDF 페이지 배경을 DOCX에 추가하지 못했습니다.", exception);
-        }
-    }
+            run.setFontFamily(KOREAN_FONT);
+            run.setFontSize(Math.max(6, Math.round(effectiveFontSize)));
+            run.setText(line.text());
 
-    private void moveInlinePictureBehindPage(XWPFRun run, int pageIndex) {
-        var drawing = run.getCTR().getDrawingArray(0);
-        CTInline inline = drawing.getInlineArray(0);
-        CTAnchor anchor = CTAnchor.Factory.newInstance();
-        anchor.setDistT(0);
-        anchor.setDistB(0);
-        anchor.setDistL(0);
-        anchor.setDistR(0);
-        anchor.setSimplePos2(false);
-        anchor.setRelativeHeight(0);
-        anchor.setBehindDoc(true);
-        anchor.setLocked(false);
-        anchor.setLayoutInCell(true);
-        anchor.setAllowOverlap(true);
-        anchor.addNewSimplePos().setX(0);
-        anchor.getSimplePos().setY(0);
-        anchor.addNewPositionH().setRelativeFrom(STRelFromH.PAGE);
-        anchor.getPositionH().setPosOffset(0);
-        anchor.addNewPositionV().setRelativeFrom(STRelFromV.PAGE);
-        anchor.getPositionV().setPosOffset(0);
-        anchor.setExtent(inline.getExtent());
-        anchor.addNewEffectExtent().setL(0);
-        anchor.getEffectExtent().setT(0);
-        anchor.getEffectExtent().setR(0);
-        anchor.getEffectExtent().setB(0);
-        anchor.addNewWrapNone();
-        anchor.setDocPr(inline.getDocPr());
-        anchor.setGraphic(inline.getGraphic());
-        anchor.getDocPr().setId(pageIndex + 1L);
-        anchor.getDocPr().setName("Page background " + (pageIndex + 1));
-        drawing.setAnchorArray(new CTAnchor[] {anchor});
-        drawing.removeInline(0);
-    }
-
-    private void addEditableTextBox(XWPFParagraph paragraph, DocumentTextLine line, int pageIndex, int lineIndex) throws IOException {
-        float boxX = Math.max(0, line.x() - 1.0f);
-        float boxY = Math.max(0, line.y() - line.height() - 1.0f);
-        float boxWidth = Math.max(MIN_TEXT_BOX_WIDTH_POINTS, line.width() + 3.0f);
-        float boxHeight = Math.max(MIN_TEXT_BOX_HEIGHT_POINTS, line.height() * 1.35f);
-        int halfPointFontSize = Math.max(10, Math.round(line.fontSize() * 2));
-        long x = Units.toEMU(boxX);
-        long y = Units.toEMU(boxY);
-        long width = Units.toEMU(boxWidth);
-        long height = Units.toEMU(boxHeight);
-        long shapeId = 10_000L + (pageIndex * 1_000L) + lineIndex;
-        String xml = """
-            <w:drawing xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-                       xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
-                       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
-                       xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
-              <wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0"
-                         relativeHeight="%d" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">
-                <wp:simplePos x="0" y="0"/>
-                <wp:positionH relativeFrom="page"><wp:posOffset>%d</wp:posOffset></wp:positionH>
-                <wp:positionV relativeFrom="page"><wp:posOffset>%d</wp:posOffset></wp:positionV>
-                <wp:extent cx="%d" cy="%d"/>
-                <wp:effectExtent l="0" t="0" r="0" b="0"/>
-                <wp:wrapNone/>
-                <wp:docPr id="%d" name="editable-text-%d-%d"/>
-                <a:graphic>
-                  <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
-                    <wps:wsp>
-                      <wps:cNvSpPr txBox="1"/>
-                      <wps:spPr>
-                        <a:xfrm><a:off x="0" y="0"/><a:ext cx="%d" cy="%d"/></a:xfrm>
-                        <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
-                        <a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill>
-                        <a:ln><a:noFill/></a:ln>
-                      </wps:spPr>
-                      <wps:txbx>
-                        <w:txbxContent>
-                          <w:p>
-                            <w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>
-                            <w:r>
-                              <w:rPr>
-                                <w:rFonts w:ascii="%s" w:hAnsi="%s" w:eastAsia="%s"/>
-                                <w:sz w:val="%d"/><w:szCs w:val="%d"/>
-                              </w:rPr>
-                              <w:t xml:space="preserve">%s</w:t>
-                            </w:r>
-                          </w:p>
-                        </w:txbxContent>
-                      </wps:txbx>
-                      <wps:bodyPr wrap="none" lIns="0" tIns="0" rIns="0" bIns="0"/>
-                    </wps:wsp>
-                  </a:graphicData>
-                </a:graphic>
-              </wp:anchor>
-            </w:drawing>
-            """.formatted(
-                251659264 + lineIndex,
-                x,
-                y,
-                width,
-                height,
-                shapeId,
-                pageIndex + 1,
-                lineIndex + 1,
-                width,
-                height,
-                KOREAN_FONT,
-                KOREAN_FONT,
-                KOREAN_FONT,
-                halfPointFontSize,
-                halfPointFontSize,
-                escapeXml(line.text())
-            );
-        appendDrawing(paragraph, xml);
-    }
-
-    private void appendDrawing(XWPFParagraph paragraph, String xml) throws IOException {
-        try {
-            CTDrawing drawing = CTDrawing.Factory.parse(xml);
-            paragraph.getCTP().addNewR().setDrawingArray(new CTDrawing[] {drawing});
-        } catch (Exception exception) {
-            throw new IOException("DOCX 시각 요소를 생성하지 못했습니다.", exception);
+            previousBaseline = line.y();
+            previousHeight = Math.max(line.height(), effectiveFontSize);
         }
     }
 
@@ -312,15 +170,6 @@ public class PdfToDocxConverter {
 
     private BigInteger pointsToTwips(float points) {
         return BigInteger.valueOf(Math.round(points * 20));
-    }
-
-    private String escapeXml(String value) {
-        return value
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace("\"", "&quot;")
-            .replace("'", "&apos;");
     }
 
     private static class PositionedTextExtractor extends PDFTextStripper {

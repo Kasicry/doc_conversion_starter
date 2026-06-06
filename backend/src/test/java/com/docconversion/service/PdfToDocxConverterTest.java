@@ -16,6 +16,7 @@ import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
+import org.apache.poi.xwpf.extractor.XWPFWordExtractor;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -24,7 +25,7 @@ class PdfToDocxConverterTest {
     private final PdfToDocxConverter converter = new PdfToDocxConverter();
 
     @Test
-    void convertsArbitraryPdfIntoVisualBackgroundAndEditableTextBoxes(@TempDir Path tempDirectory) throws Exception {
+    void convertsArbitraryPdfIntoEditableTextWithoutFullPageImage(@TempDir Path tempDirectory) throws Exception {
         Path pdf = tempDirectory.resolve("arbitrary-document.pdf");
         Files.copy(Path.of("../cv_doc/배달의민족 회원탈퇴 요청서.pdf"), pdf);
 
@@ -32,10 +33,11 @@ class PdfToDocxConverterTest {
 
         try (XWPFDocument document = new XWPFDocument(new ByteArrayInputStream(result))) {
             String documentXml = document.getDocument().xmlText();
-            assertThat(document.getAllPictures()).hasSize(1);
-            assertThat(documentXml).contains("page-background-1");
-            assertThat(documentXml).contains("editable-text-1-");
-            assertThat(documentXml).contains("배달의민족 회원탈퇴 요청서");
+            String documentText = new XWPFWordExtractor(document).getText();
+            assertThat(document.getAllPictures()).isEmpty();
+            assertThat(documentText).contains("배달의민족 회원탈퇴 요청서");
+            assertThat(documentXml).doesNotContain("w:drawing");
+            assertThat(documentXml).doesNotContain("w:line=\"240\"");
         }
     }
 
@@ -49,10 +51,10 @@ class PdfToDocxConverterTest {
 
         try (XWPFDocument document = new XWPFDocument(new ByteArrayInputStream(result))) {
             String documentXml = document.getDocument().xmlText();
-            assertThat(document.getAllPictures()).hasSize(1);
-            assertThat(documentXml).contains("page-background-1");
-            assertThat(documentXml).contains("editable-text-1-");
-            assertThat(documentXml).containsIgnoringCase("SCANNED");
+            String documentText = new XWPFWordExtractor(document).getText();
+            assertThat(document.getAllPictures()).isEmpty();
+            assertThat(documentText).containsIgnoringCase("SCANNED");
+            assertThat(documentXml).doesNotContain("w:drawing");
         }
     }
 
@@ -65,10 +67,10 @@ class PdfToDocxConverterTest {
 
         try (XWPFDocument document = new XWPFDocument(new ByteArrayInputStream(result))) {
             String documentXml = document.getDocument().xmlText();
-            assertThat(document.getAllPictures()).isNotEmpty();
-            assertThat(documentXml).contains("page-background-1");
-            assertThat(documentXml).contains("page-background-2");
-            assertThat(documentXml).contains("editable-text-2-");
+            String documentText = new XWPFWordExtractor(document).getText();
+            assertThat(document.getAllPictures()).isEmpty();
+            assertThat(documentText).containsIgnoringCase("MULTIPLE SCANNED PAGE");
+            assertThat(documentXml).doesNotContain("w:drawing");
         }
     }
 
