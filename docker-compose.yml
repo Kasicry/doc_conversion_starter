@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: doc-conversion-postgres
+    environment:
+      POSTGRES_DB: doc_conversion
+      POSTGRES_USER: doc_conversion
+      POSTGRES_PASSWORD: doc_conversion
+    ports:
+      - "13832:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U doc_conversion -d doc_conversion"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres-data:

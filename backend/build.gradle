@@ -1,0 +1,78 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '4.0.6'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.docconversion'
+version = '0.1.0'
+description = 'PDF document conversion backend'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+ext {
+    pdfboxVersion = '3.0.7'
+    poiVersion = '5.4.1'
+}
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    implementation 'org.springframework.boot:spring-boot-starter-security'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+    implementation 'org.springframework.boot:spring-boot-flyway'
+    implementation 'org.flywaydb:flyway-core'
+    implementation 'org.flywaydb:flyway-database-postgresql'
+    implementation "org.apache.pdfbox:pdfbox:${pdfboxVersion}"
+    implementation "org.apache.poi:poi-ooxml:${poiVersion}"
+
+    runtimeOnly 'org.postgresql:postgresql'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+    failOnNoDiscoveredTests = false
+}
+
+tasks.register('generateSampleConversion', JavaExec) {
+    group = 'verification'
+    description = 'Generate a sample PDF and convert it to DOCX under cv_doc.'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.docconversion.tools.SampleConversionGenerator'
+    args layout.projectDirectory.dir('../cv_doc').asFile.absolutePath
+}
+
+tasks.register('inspectBaeminPdf', JavaExec) {
+    group = 'verification'
+    description = 'Inspect and render the Baemin withdrawal PDF sample.'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.docconversion.tools.PdfInspectionTool'
+    args layout.projectDirectory.file('../cv_doc/배달의민족 회원탈퇴 요청서.pdf').asFile.absolutePath,
+        layout.projectDirectory.dir('../cv_doc').asFile.absolutePath
+}
+
+tasks.register('countRenderedBaeminPages', JavaExec) {
+    group = 'verification'
+    description = 'Count rendered PDF pages for the converted Baemin DOCX.'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.docconversion.tools.PdfPageCountTool'
+    def renderedPdfPath = (project.findProperty('pdfPath') ?: '../cv_doc/baemin_converted.pdf').toString()
+    args file(renderedPdfPath).absolutePath
+}
+
+tasks.register('renderPdf', JavaExec) {
+    group = 'verification'
+    description = 'Render a PDF into PNG images for visual inspection.'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.docconversion.tools.RenderPdfTool'
+    def renderedPdfPath = (project.findProperty('pdfPath') ?: '../cv_doc/baemin_converted.pdf').toString()
+    def outputPrefix = (project.findProperty('outputPrefix') ?: '../cv_doc/rendered_pdf').toString()
+    args file(renderedPdfPath).absolutePath, file(outputPrefix).absolutePath
+}

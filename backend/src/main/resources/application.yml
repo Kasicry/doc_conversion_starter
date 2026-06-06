@@ -1,0 +1,32 @@
+server:
+  port: 13800
+
+spring:
+  application:
+    name: doc-conversion-backend
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:13832/doc_conversion}
+    username: ${DB_USERNAME:doc_conversion}
+    password: ${DB_PASSWORD:doc_conversion}
+  flyway:
+    enabled: true
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+app:
+  storage:
+    root: ${APP_STORAGE_ROOT:./storage}
+  cors:
+    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:13801,http://127.0.0.1:13801}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
