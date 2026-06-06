@@ -96,3 +96,12 @@ tasks.register('createScannedPdf', JavaExec) {
     def outputPdf = (project.findProperty('outputPdf') ?: '../cv_doc/scanned_document.pdf').toString()
     args file(inputPdf).absolutePath, file(outputPdf).absolutePath
 }
+
+tasks.register('inspectVectorLayout', JavaExec) {
+    group = 'verification'
+    description = 'Inspect horizontal and vertical PDF vector lines.'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.docconversion.tools.InspectVectorLayoutTool'
+    def inputPdf = (project.findProperty('inputPdf') ?: '../cv_doc/sample_document.pdf').toString()
+    args file(inputPdf).absolutePath
+}

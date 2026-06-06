@@ -36,6 +36,14 @@ class PdfToDocxConverterTest {
             String documentText = new XWPFWordExtractor(document).getText();
             assertThat(document.getAllPictures()).isEmpty();
             assertThat(documentText).contains("배달의민족 회원탈퇴 요청서");
+            assertThat(document.getTables()).hasSize(3);
+            assertThat(document.getTables().get(0).getRow(0).getTableCells()).hasSize(5);
+            assertThat(document.getTables().get(2).getText())
+                .contains("유의사항")
+                .contains("회원탈퇴요청 전에 꼭 확인하세요");
+            assertThat(documentXml).contains("vMerge");
+            assertThat(documentXml).contains("w:shd");
+            assertThat(documentXml).doesNotContain("w:type=\"page\"");
             assertThat(documentXml).doesNotContain("w:drawing");
             assertThat(documentXml).doesNotContain("w:line=\"240\"");
         }
