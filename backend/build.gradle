@@ -76,3 +76,13 @@ tasks.register('renderPdf', JavaExec) {
     def outputPrefix = (project.findProperty('outputPrefix') ?: '../cv_doc/rendered_pdf').toString()
     args file(renderedPdfPath).absolutePath, file(outputPrefix).absolutePath
 }
+
+tasks.register('convertPdf', JavaExec) {
+    group = 'verification'
+    description = 'Convert an arbitrary PDF to a generic editable DOCX.'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.docconversion.tools.ConvertPdfTool'
+    def inputPdf = (project.findProperty('inputPdf') ?: '../cv_doc/sample_document.pdf').toString()
+    def outputDocx = (project.findProperty('outputDocx') ?: '../cv_doc/converted_document.docx').toString()
+    args file(inputPdf).absolutePath, file(outputDocx).absolutePath
+}
