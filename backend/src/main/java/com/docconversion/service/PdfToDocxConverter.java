@@ -27,6 +27,7 @@ import org.openxmlformats.schemas.drawingml.x2006.wordprocessingDrawing.CTInline
 import org.openxmlformats.schemas.drawingml.x2006.wordprocessingDrawing.STRelFromH;
 import org.openxmlformats.schemas.drawingml.x2006.wordprocessingDrawing.STRelFromV;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTDrawing;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -37,6 +38,16 @@ public class PdfToDocxConverter {
     private static final float MIN_TEXT_BOX_WIDTH_POINTS = 12.0f;
     private static final float MIN_TEXT_BOX_HEIGHT_POINTS = 8.0f;
     private static final String KOREAN_FONT = "Malgun Gothic";
+    private final TesseractOcrService ocrService;
+
+    @Autowired
+    public PdfToDocxConverter(TesseractOcrService ocrService) {
+        this.ocrService = ocrService;
+    }
+
+    public PdfToDocxConverter() {
+        this(new TesseractOcrService());
+    }
 
     public byte[] convert(Path pdfPath) {
         try (PDDocument pdf = Loader.loadPDF(pdfPath.toFile());
@@ -64,7 +75,11 @@ public class PdfToDocxConverter {
                 canvas.setSpacingBefore(0);
 
                 addPageBackground(docx, canvas, renderer, page, pageIndex);
-                List<TextLine> lines = groupIntoLines(textByPage.getOrDefault(pageIndex + 1, List.of()));
+                List<DocumentTextLine> lines = groupIntoLines(textByPage.getOrDefault(pageIndex + 1, List.of()));
+                if (lines.isEmpty() && ocrService.isAvailable()) {
+                    BufferedImage ocrImage = renderer.renderImageWithDPI(pageIndex, ocrService.renderDpi());
+                    lines = ocrService.recognize(ocrImage);
+                }
                 for (int lineIndex = 0; lineIndex < lines.size(); lineIndex++) {
                     addEditableTextBox(canvas, lines.get(lineIndex), pageIndex, lineIndex);
                 }
@@ -157,7 +172,7 @@ public class PdfToDocxConverter {
         drawing.removeInline(0);
     }
 
-    private void addEditableTextBox(XWPFParagraph paragraph, TextLine line, int pageIndex, int lineIndex) throws IOException {
+    private void addEditableTextBox(XWPFParagraph paragraph, DocumentTextLine line, int pageIndex, int lineIndex) throws IOException {
         float boxX = Math.max(0, line.x() - 1.0f);
         float boxY = Math.max(0, line.y() - line.height() - 1.0f);
         float boxWidth = Math.max(MIN_TEXT_BOX_WIDTH_POINTS, line.width() + 3.0f);
@@ -242,7 +257,7 @@ public class PdfToDocxConverter {
         }
     }
 
-    private List<TextLine> groupIntoLines(List<TextPosition> positions) {
+    private List<DocumentTextLine> groupIntoLines(List<TextPosition> positions) {
         List<TextPosition> sorted = positions.stream()
             .filter(position -> !position.getUnicode().isBlank())
             .sorted(Comparator.comparing(TextPosition::getYDirAdj).thenComparing(TextPosition::getXDirAdj))
@@ -267,7 +282,7 @@ public class PdfToDocxConverter {
             .toList();
     }
 
-    private TextLine toTextLine(List<TextPosition> positions) {
+    private DocumentTextLine toTextLine(List<TextPosition> positions) {
         List<TextPosition> sorted = positions.stream()
             .sorted(Comparator.comparing(TextPosition::getXDirAdj))
             .toList();
@@ -292,7 +307,7 @@ public class PdfToDocxConverter {
             .orElse(x);
         float height = sorted.stream().map(TextPosition::getHeightDir).max(Float::compare).orElse(10f);
         float fontSize = sorted.stream().map(TextPosition::getFontSizeInPt).max(Float::compare).orElse(10f);
-        return new TextLine(text.toString(), x, y, right - x, height, fontSize);
+        return new DocumentTextLine(text.toString(), x, y, right - x, height, fontSize);
     }
 
     private BigInteger pointsToTwips(float points) {
@@ -306,9 +321,6 @@ public class PdfToDocxConverter {
             .replace(">", "&gt;")
             .replace("\"", "&quot;")
             .replace("'", "&apos;");
-    }
-
-    private record TextLine(String text, float x, float y, float width, float height, float fontSize) {
     }
 
     private static class PositionedTextExtractor extends PDFTextStripper {

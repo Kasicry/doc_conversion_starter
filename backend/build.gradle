@@ -86,3 +86,13 @@ tasks.register('convertPdf', JavaExec) {
     def outputDocx = (project.findProperty('outputDocx') ?: '../cv_doc/converted_document.docx').toString()
     args file(inputPdf).absolutePath, file(outputDocx).absolutePath
 }
+
+tasks.register('createScannedPdf', JavaExec) {
+    group = 'verification'
+    description = 'Create an image-only scanned PDF for OCR verification.'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.docconversion.tools.CreateScannedPdfTool'
+    def inputPdf = (project.findProperty('inputPdf') ?: '../cv_doc/sample_document.pdf').toString()
+    def outputPdf = (project.findProperty('outputPdf') ?: '../cv_doc/scanned_document.pdf').toString()
+    args file(inputPdf).absolutePath, file(outputPdf).absolutePath
+}
