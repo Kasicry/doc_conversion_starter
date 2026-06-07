@@ -1,6 +1,7 @@
 package com.docconversion.service;
 
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigInteger;
@@ -10,12 +11,16 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import javax.imageio.ImageIO;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.rendering.PDFRenderer;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.apache.pdfbox.text.TextPosition;
+import org.apache.poi.util.Units;
+import org.apache.poi.xwpf.usermodel.Document;
+import org.apache.poi.xwpf.usermodel.LineSpacingRule;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
 import org.apache.poi.xwpf.usermodel.XWPFRun;
@@ -76,7 +81,14 @@ public class PdfToDocxConverter {
                 PdfVectorLayoutExtractor vectorExtractor = new PdfVectorLayoutExtractor(page);
                 List<PdfTableLayoutDetector.TableRegion> tables = tableDetector.detect(vectorExtractor.extract());
                 List<DocumentTextLine> chunks = pagePositions.isEmpty() ? lines : groupIntoChunks(pagePositions);
-                writeEditablePage(docx, lines, chunks, tables, vectorExtractor.fillRegions());
+                writeEditablePage(
+                    docx,
+                    lines,
+                    chunks,
+                    tables,
+                    vectorExtractor.fillRegions(),
+                    vectorExtractor.imageRegions()
+                );
             }
 
             docx.write(output);
@@ -108,20 +120,22 @@ public class PdfToDocxConverter {
         List<DocumentTextLine> lines,
         List<DocumentTextLine> chunks,
         List<PdfTableLayoutDetector.TableRegion> tables,
-        List<PdfVectorLayoutExtractor.FillRegion> fills
+        List<PdfVectorLayoutExtractor.FillRegion> fills,
+        List<PdfVectorLayoutExtractor.ImageRegion> images
     ) {
-        float previousBaseline = 0;
+        float previousBaseline = writeLeadingImages(document, images, firstContentTop(lines, tables));
         float previousHeight = 0;
         int lineIndex = 0;
         for (PdfTableLayoutDetector.TableRegion table : tables) {
             while (lineIndex < lines.size() && lines.get(lineIndex).y() < table.top()) {
                 DocumentTextLine line = lines.get(lineIndex++);
                 if (tables.stream().noneMatch(candidate -> candidate.contains(line))) {
-                    writeParagraph(document, line, previousBaseline, previousHeight);
+                    writePositionedParagraph(document, chunksAtBaseline(chunks, line), previousBaseline, previousHeight);
                     previousBaseline = line.y();
                     previousHeight = Math.max(line.height(), line.fontSize());
                 }
             }
+            writeVerticalSpacer(document, Math.max(0, table.top() - previousBaseline - previousHeight));
             writeTable(document, table, chunks.stream().filter(table::contains).toList(), fills);
             previousBaseline = table.bottom();
             previousHeight = 0;
@@ -132,33 +146,130 @@ public class PdfToDocxConverter {
         while (lineIndex < lines.size()) {
             DocumentTextLine line = lines.get(lineIndex++);
             if (tables.stream().noneMatch(table -> table.contains(line))) {
-                writeParagraph(document, line, previousBaseline, previousHeight);
+                writePositionedParagraph(document, chunksAtBaseline(chunks, line), previousBaseline, previousHeight);
                 previousBaseline = line.y();
                 previousHeight = Math.max(line.height(), line.fontSize());
             }
         }
     }
 
-    private void writeParagraph(
+    private float firstContentTop(List<DocumentTextLine> lines, List<PdfTableLayoutDetector.TableRegion> tables) {
+        float firstLine = lines.stream().map(DocumentTextLine::y).min(Float::compare).orElse(Float.MAX_VALUE);
+        float firstTable = tables.stream().map(PdfTableLayoutDetector.TableRegion::top).min(Float::compare).orElse(Float.MAX_VALUE);
+        return Math.min(firstLine, firstTable);
+    }
+
+    private float writeLeadingImages(
         XWPFDocument document,
-        DocumentTextLine line,
+        List<PdfVectorLayoutExtractor.ImageRegion> images,
+        float firstContentTop
+    ) {
+        float previousBottom = 0;
+        for (PdfVectorLayoutExtractor.ImageRegion image : images.stream()
+            .filter(candidate -> candidate.bottom() <= firstContentTop)
+            .sorted(Comparator.comparing(PdfVectorLayoutExtractor.ImageRegion::top))
+            .toList()) {
+            XWPFParagraph paragraph = document.createParagraph();
+            paragraph.setIndentationLeft(Math.max(0, Math.round(image.left() * 20)));
+            paragraph.setSpacingBefore(Math.max(0, Math.round((image.top() - previousBottom) * 20)));
+            paragraph.setSpacingAfter(0);
+            try (ByteArrayOutputStream imageOutput = new ByteArrayOutputStream()) {
+                ImageIO.write(image.image(), "png", imageOutput);
+                paragraph.createRun().addPicture(
+                    new ByteArrayInputStream(imageOutput.toByteArray()),
+                    Document.PICTURE_TYPE_PNG,
+                    "pdf-image.png",
+                    Units.toEMU(image.width()),
+                    Units.toEMU(image.height())
+                );
+            } catch (Exception exception) {
+                throw new IllegalStateException("PDF image could not be added to DOCX", exception);
+            }
+            previousBottom = image.bottom();
+        }
+        return previousBottom;
+    }
+
+    private List<DocumentTextLine> chunksAtBaseline(List<DocumentTextLine> chunks, DocumentTextLine line) {
+        List<DocumentTextLine> matching = chunks.stream()
+            .filter(chunk -> Math.abs(chunk.y() - line.y()) <= ROW_TOLERANCE_POINTS)
+            .sorted(Comparator.comparing(DocumentTextLine::x))
+            .toList();
+        return matching.isEmpty() ? List.of(line) : matching;
+    }
+
+    private void writePositionedParagraph(
+        XWPFDocument document,
+        List<DocumentTextLine> chunks,
         float previousBaseline,
         float previousHeight
     ) {
-        float effectiveFontSize = effectiveFontSize(line);
+        DocumentTextLine first = chunks.get(0);
         float verticalGap = previousBaseline == 0
-            ? Math.max(0, line.y() - line.height())
-            : Math.max(0, line.y() - previousBaseline - previousHeight);
+            ? Math.max(0, first.y() - first.height())
+            : Math.max(0, first.y() - previousBaseline - previousHeight);
 
         XWPFParagraph paragraph = document.createParagraph();
-        paragraph.setIndentationLeft(Math.max(0, Math.round(line.x() * 20)));
         paragraph.setSpacingBefore(Math.max(0, Math.round(verticalGap * 20)));
         paragraph.setSpacingAfter(0);
+        float lineHeight = chunks.stream()
+            .map(chunk -> Math.max(chunk.height(), effectiveFontSize(chunk) * 1.05f))
+            .max(Float::compare)
+            .orElse(effectiveFontSize(first));
+        paragraph.setSpacingBetween(lineHeight, LineSpacingRule.EXACT);
+        if (chunks.size() == 1) {
+            paragraph.setIndentationLeft(Math.max(0, Math.round(first.x() * 20)));
+        } else {
+            var pPr = paragraph.getCTP().isSetPPr() ? paragraph.getCTP().getPPr() : paragraph.getCTP().addNewPPr();
+            var tabs = pPr.isSetTabs() ? pPr.getTabs() : pPr.addNewTabs();
+            for (DocumentTextLine chunk : chunks) {
+                var tab = tabs.addNewTab();
+                tab.setVal(org.openxmlformats.schemas.wordprocessingml.x2006.main.STTabJc.LEFT);
+                tab.setPos(BigInteger.valueOf(Math.max(0, Math.round(chunk.x() * 20))));
+                XWPFRun run = paragraph.createRun();
+                run.addTab();
+                configureRun(run, chunk);
+            }
+        }
+        if (chunks.size() == 1) {
+            configureRun(paragraph.createRun(), first);
+        }
+    }
 
-        XWPFRun run = paragraph.createRun();
-        run.setFontFamily(KOREAN_FONT);
-        run.setFontSize(Math.max(6, Math.round(effectiveFontSize)));
+    private void configureRun(XWPFRun run, DocumentTextLine line) {
+        setRunFont(run, KOREAN_FONT);
+        setRunFontSize(run, effectiveFontSize(line));
         run.setText(line.text());
+    }
+
+    private void setRunFontSize(XWPFRun run, float points) {
+        BigInteger halfPoints = BigInteger.valueOf(Math.max(12, Math.round(points * 2.0f)));
+        var runProperties = run.getCTR().isSetRPr() ? run.getCTR().getRPr() : run.getCTR().addNewRPr();
+        var size = runProperties.sizeOfSzArray() > 0 ? runProperties.getSzArray(0) : runProperties.addNewSz();
+        size.setVal(halfPoints);
+        var complexSize = runProperties.sizeOfSzCsArray() > 0 ? runProperties.getSzCsArray(0) : runProperties.addNewSzCs();
+        complexSize.setVal(halfPoints);
+    }
+
+    private void setRunFont(XWPFRun run, String fontFamily) {
+        run.setFontFamily(fontFamily);
+        var runProperties = run.getCTR().isSetRPr() ? run.getCTR().getRPr() : run.getCTR().addNewRPr();
+        var fonts = runProperties.addNewRFonts();
+        fonts.setAscii(fontFamily);
+        fonts.setHAnsi(fontFamily);
+        fonts.setEastAsia(fontFamily);
+        fonts.setCs(fontFamily);
+    }
+
+    private void writeVerticalSpacer(XWPFDocument document, float gapPoints) {
+        if (gapPoints < 1) {
+            return;
+        }
+        XWPFParagraph spacer = document.createParagraph();
+        spacer.setSpacingBefore(0);
+        spacer.setSpacingAfter(Math.max(0, Math.round(gapPoints * 20)));
+        spacer.setSpacingBetween(1, LineSpacingRule.EXACT);
+        spacer.createRun().setFontSize(1);
     }
 
     private void writeTable(
@@ -172,33 +283,101 @@ public class PdfToDocxConverter {
         for (int rowIndex = 0; rowIndex < region.rows(); rowIndex++) {
             XWPFTableRow row = table.getRow(rowIndex);
             row.setHeight(Math.max(180, Math.round((region.ys().get(rowIndex + 1) - region.ys().get(rowIndex)) * 20)));
-            row.setHeightRule(TableRowHeightRule.AT_LEAST);
+            row.setHeightRule(TableRowHeightRule.EXACT);
             for (int columnIndex = 0; columnIndex < region.columns(); columnIndex++) {
                 XWPFTableCell cell = row.getCell(columnIndex);
                 clearCell(cell);
                 applyCellShading(cell, region, rowIndex, columnIndex, fills);
-                XWPFParagraph paragraph = cell.addParagraph();
-                paragraph.setSpacingAfter(0);
-                paragraph.setSpacingBefore(0);
                 int finalRowIndex = rowIndex;
                 int finalColumnIndex = columnIndex;
                 List<DocumentTextLine> cellLines = chunks.stream()
                     .filter(line -> region.rowOf(line) == finalRowIndex && region.columnOf(line) == finalColumnIndex)
                     .sorted(Comparator.comparing(DocumentTextLine::y).thenComparing(DocumentTextLine::x))
                     .toList();
-                for (int index = 0; index < cellLines.size(); index++) {
-                    if (index > 0) {
-                        paragraph.createRun().addBreak();
-                    }
-                    DocumentTextLine line = cellLines.get(index);
-                    XWPFRun run = paragraph.createRun();
-                    run.setFontFamily(KOREAN_FONT);
-                    run.setFontSize(Math.round(effectiveFontSize(line)));
-                    run.setText(line.text());
-                }
+                writeCellContent(cell, region, rowIndex, columnIndex, cellLines);
             }
         }
         applyMerges(table, region);
+    }
+
+    private void writeCellContent(
+        XWPFTableCell cell,
+        PdfTableLayoutDetector.TableRegion region,
+        int rowIndex,
+        int columnIndex,
+        List<DocumentTextLine> lines
+    ) {
+        if (lines.isEmpty()) {
+            cell.addParagraph();
+            return;
+        }
+        applyContentMargins(cell, region, rowIndex, columnIndex, lines);
+        float rowHeight = region.ys().get(rowIndex + 1) - region.ys().get(rowIndex);
+        boolean multilineCell = lines.size() > 2 || rowHeight > 80;
+        cell.setVerticalAlignment(multilineCell
+            ? XWPFTableCell.XWPFVertAlign.TOP
+            : XWPFTableCell.XWPFVertAlign.CENTER);
+
+        XWPFParagraph paragraph = cell.addParagraph();
+        paragraph.setSpacingBefore(multilineCell ? multilineTopSpacing(region, rowIndex, lines) : 0);
+        paragraph.setSpacingAfter(0);
+        paragraph.setSpacingBetween(cellLineSpacing(lines, rowHeight), LineSpacingRule.EXACT);
+        for (int lineIndex = 0; lineIndex < lines.size(); lineIndex++) {
+            DocumentTextLine line = lines.get(lineIndex);
+            if (lineIndex > 0) {
+                paragraph.createRun().addBreak();
+            }
+            XWPFRun run = paragraph.createRun();
+            setRunFont(run, KOREAN_FONT);
+            setRunFontSize(run, effectiveFontSize(line));
+            run.setText(line.text());
+        }
+    }
+
+    private int multilineTopSpacing(
+        PdfTableLayoutDetector.TableRegion region,
+        int rowIndex,
+        List<DocumentTextLine> lines
+    ) {
+        float sourceTopGap = Math.max(0, lines.get(0).y() - region.ys().get(rowIndex));
+        return Math.round(Math.min(sourceTopGap, 6) * 20);
+    }
+
+    private float cellLineSpacing(List<DocumentTextLine> lines, float rowHeight) {
+        float largestFont = lines.stream().map(this::effectiveFontSize).max(Float::compare).orElse(10.0f);
+        if (lines.size() < 2) {
+            return largestFont * 1.05f;
+        }
+        float sourceLineSpacing = 0;
+        for (int index = 1; index < lines.size(); index++) {
+            sourceLineSpacing += Math.max(0, lines.get(index).y() - lines.get(index - 1).y());
+        }
+        sourceLineSpacing /= lines.size() - 1;
+        float availableLineSpacing = Math.max(largestFont, (rowHeight - 6) / lines.size());
+        return Math.max(largestFont, Math.min(sourceLineSpacing, availableLineSpacing));
+    }
+
+    private void applyContentMargins(
+        XWPFTableCell cell,
+        PdfTableLayoutDetector.TableRegion region,
+        int rowIndex,
+        int columnIndex,
+        List<DocumentTextLine> lines
+    ) {
+        float cellLeft = region.xs().get(columnIndex);
+        float textLeft = lines.stream().map(DocumentTextLine::x).min(Float::compare).orElse(cellLeft);
+
+        var tcPr = cell.getCTTc().isSetTcPr() ? cell.getCTTc().getTcPr() : cell.getCTTc().addNewTcPr();
+        var margins = tcPr.isSetTcMar() ? tcPr.getTcMar() : tcPr.addNewTcMar();
+        setCellMargin(margins.isSetLeft() ? margins.getLeft() : margins.addNewLeft(), textLeft - cellLeft);
+        setCellMargin(margins.isSetRight() ? margins.getRight() : margins.addNewRight(), 0);
+        setCellMargin(margins.isSetTop() ? margins.getTop() : margins.addNewTop(), 0);
+        setCellMargin(margins.isSetBottom() ? margins.getBottom() : margins.addNewBottom(), 0);
+    }
+
+    private void setCellMargin(org.openxmlformats.schemas.wordprocessingml.x2006.main.CTTblWidth margin, float points) {
+        margin.setType(STTblWidth.DXA);
+        margin.setW(BigInteger.valueOf(Math.max(0, Math.round(points * 20))));
     }
 
     private void applyCellShading(
@@ -251,6 +430,10 @@ public class PdfToDocxConverter {
         for (int row = 0; row < region.rows(); row++) {
             for (int boundary = 1; boundary < region.columns(); boundary++) {
                 if (!region.hasVerticalBoundary(boundary, row)) {
+                    moveVisibleTextToMergeStart(
+                        table.getRow(row).getCell(boundary),
+                        table.getRow(row).getCell(boundary - 1)
+                    );
                     setHorizontalMerge(table.getRow(row).getCell(boundary - 1), STMerge.RESTART);
                     setHorizontalMerge(table.getRow(row).getCell(boundary), STMerge.CONTINUE);
                 }
@@ -259,11 +442,33 @@ public class PdfToDocxConverter {
         for (int column = 0; column < region.columns(); column++) {
             for (int boundary = 1; boundary < region.rows(); boundary++) {
                 if (!region.hasHorizontalBoundary(boundary, column)) {
+                    moveVisibleTextToMergeStart(
+                        table.getRow(boundary).getCell(column),
+                        table.getRow(boundary - 1).getCell(column)
+                    );
                     setVerticalMerge(table.getRow(boundary - 1).getCell(column), STMerge.RESTART);
                     setVerticalMerge(table.getRow(boundary).getCell(column), STMerge.CONTINUE);
                 }
             }
         }
+    }
+
+    private void moveVisibleTextToMergeStart(XWPFTableCell source, XWPFTableCell target) {
+        String sourceText = source.getText().trim();
+        if (sourceText.isEmpty() || !target.getText().trim().isEmpty()) {
+            return;
+        }
+        clearCell(target);
+        target.setVerticalAlignment(XWPFTableCell.XWPFVertAlign.CENTER);
+        XWPFParagraph paragraph = target.addParagraph();
+        paragraph.setSpacingBefore(0);
+        paragraph.setSpacingAfter(0);
+        XWPFRun run = paragraph.createRun();
+        setRunFont(run, KOREAN_FONT);
+        run.setFontSize(10);
+        run.setText(sourceText);
+        clearCell(source);
+        source.addParagraph();
     }
 
     private void setHorizontalMerge(XWPFTableCell cell, STMerge.Enum value) {
@@ -358,7 +563,10 @@ public class PdfToDocxConverter {
             .max(Float::compare)
             .orElse(x);
         float height = sorted.stream().map(TextPosition::getHeightDir).max(Float::compare).orElse(10f);
-        float fontSize = sorted.stream().map(TextPosition::getFontSizeInPt).max(Float::compare).orElse(10f);
+        float fontSize = sorted.stream()
+            .map(position -> Math.max(position.getFontSize(), position.getFontSizeInPt()))
+            .max(Float::compare)
+            .orElse(10f);
         return new DocumentTextLine(text.toString(), x, y, right - x, height, fontSize);
     }
 

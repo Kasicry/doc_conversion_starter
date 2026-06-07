@@ -1,6 +1,7 @@
 package com.docconversion.service;
 
 import java.awt.geom.Point2D;
+import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -16,6 +17,7 @@ public final class PdfVectorLayoutExtractor extends PDFGraphicsStreamEngine {
     private final List<LineSegment> currentPath = new ArrayList<>();
     private final List<LineSegment> segments = new ArrayList<>();
     private final List<FillRegion> fillRegions = new ArrayList<>();
+    private final List<ImageRegion> imageRegions = new ArrayList<>();
     private Point2D.Float currentPoint;
     private Point2D.Float subPathStart;
 
@@ -32,6 +34,10 @@ public final class PdfVectorLayoutExtractor extends PDFGraphicsStreamEngine {
         return List.copyOf(fillRegions);
     }
 
+    public List<ImageRegion> imageRegions() {
+        return List.copyOf(imageRegions);
+    }
+
     @Override
     public void appendRectangle(Point2D p0, Point2D p1, Point2D p2, Point2D p3) {
         addPathLine(p0, p1);
@@ -43,7 +49,15 @@ public final class PdfVectorLayoutExtractor extends PDFGraphicsStreamEngine {
     }
 
     @Override
-    public void drawImage(PDImage pdImage) {
+    public void drawImage(PDImage pdImage) throws IOException {
+        var matrix = getGraphicsState().getCurrentTransformationMatrix();
+        float width = matrix.getScalingFactorX();
+        float height = matrix.getScalingFactorY();
+        float left = matrix.getTranslateX();
+        float top = getPage().getMediaBox().getHeight() - matrix.getTranslateY() - height;
+        if (width >= 4 && height >= 4) {
+            imageRegions.add(new ImageRegion(left, top, width, height, pdImage.getImage()));
+        }
     }
 
     @Override
@@ -176,6 +190,13 @@ public final class PdfVectorLayoutExtractor extends PDFGraphicsStreamEngine {
 
         public String hexColor() {
             return String.format("%06X", rgb);
+        }
+    }
+
+    public record ImageRegion(float left, float top, float width, float height, BufferedImage image) {
+
+        public float bottom() {
+            return top + height;
         }
     }
 
